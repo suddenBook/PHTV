@@ -1,6 +1,9 @@
 package com.phtv.app.data
 
 import android.util.Log
+import com.phtv.app.core.model.Categories
+import com.phtv.app.core.model.Category
+import com.phtv.app.core.model.Orientation
 import com.phtv.app.core.model.SortOrder
 import com.phtv.app.core.model.Video
 import com.phtv.app.core.model.VideoStreams
@@ -12,15 +15,21 @@ import java.net.URLEncoder
 /** Single entry point for all PornHub data access. Methods are main-safe (switch to IO internally). */
 class PornhubRepository {
 
-    suspend fun home(page: Int = 1, sort: SortOrder = SortOrder.HOT): List<Video> =
-        listing("/video?o=${sort.param}&page=$page")
+    suspend fun home(orientation: Orientation, page: Int = 1, sort: SortOrder = SortOrder.HOT): List<Video> =
+        listing(orientation.homePath(sort.param, page))
 
-    suspend fun category(id: String, page: Int = 1, sort: SortOrder = SortOrder.HOT): List<Video> =
-        listing("/video?c=$id&o=${sort.param}&page=$page")
+    suspend fun category(orientation: Orientation, id: String, page: Int = 1, sort: SortOrder = SortOrder.HOT): List<Video> =
+        listing(orientation.categoryPath(id, sort.param, page))
 
-    suspend fun search(query: String, page: Int = 1): List<Video> {
-        val encoded = URLEncoder.encode(query, "UTF-8")
-        return listing("/video/search?search=$encoded&page=$page")
+    suspend fun search(orientation: Orientation, query: String, page: Int = 1): List<Video> =
+        listing(orientation.searchPath(URLEncoder.encode(query, "UTF-8"), page))
+
+    /** Category taxonomy for an orientation (straight uses the bundled list; others are scraped live). */
+    suspend fun categories(orientation: Orientation): List<Category> = withContext(Dispatchers.IO) {
+        if (orientation == Orientation.STRAIGHT) return@withContext Categories.ALL
+        val path = orientation.categoriesPath ?: return@withContext emptyList()
+        val parsed = HtmlParser.parseCategories(PhHttp.getText(PhHttp.BASE + path, useCache = true))
+        parsed.ifEmpty { if (orientation == Orientation.STRAIGHT) Categories.ALL else parsed }
     }
 
     /** Resolve fresh playback URLs right before playing; PornHub stream URLs are signed and expire. */
@@ -39,9 +48,8 @@ class PornhubRepository {
     private suspend fun listing(path: String): List<Video> = withContext(Dispatchers.IO) {
         val url = PhHttp.BASE + path
         try {
-            val html = PhHttp.getText(url)
-            val videos = HtmlParser.parseVideoList(html)
-            Log.d(TAG, "listing $path -> ${videos.size} videos (html ${html.length} chars)")
+            val videos = HtmlParser.parseVideoList(PhHttp.getText(url, useCache = true))
+            Log.d(TAG, "listing $path -> ${videos.size} videos")
             videos
         } catch (t: Throwable) {
             Log.e(TAG, "listing $path FAILED: ${t.message}", t)

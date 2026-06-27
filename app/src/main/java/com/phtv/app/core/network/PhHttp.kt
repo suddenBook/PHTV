@@ -14,13 +14,16 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Networking for PornHub. No public API exists, so we fetch HTML/JS like a browser:
- * realistic UA + Referer + consent cookies. The same client is reused for image loading (Coil)
- * so thumbnails on hotlink-protected CDNs also carry a Referer.
+ * realistic UA + Referer + consent cookies. Reused by Coil so thumbnails carry a Referer.
+ * Listing responses are briefly cached and 403/429 (rate-limit) responses are retried with backoff.
  */
 object PhHttp {
     const val BASE = "https://www.pornhub.com"
     const val USER_AGENT =
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+    private const val CACHE_TTL_MS = 90_000L
+    private val cache = ConcurrentHashMap<String, Pair<Long, String>>()
 
     val client: OkHttpClient = OkHttpClient.Builder()
         .cookieJar(PhCookieJar())
@@ -31,12 +34,38 @@ object PhHttp {
         .addInterceptor(LogInterceptor())
         .build()
 
-    fun getText(url: String, referer: String = "$BASE/"): String {
-        val request = Request.Builder().url(url).header("Referer", referer).build()
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("HTTP ${response.code} for $url")
-            return response.body.string()
+    /**
+     * GET text. [useCache] serves a recent in-memory copy (good for listings, which we revisit a lot
+     * while browsing) to avoid hammering the site. 403/429 are retried with exponential backoff.
+     */
+    fun getText(url: String, referer: String = "$BASE/", useCache: Boolean = false): String {
+        if (useCache) {
+            cache[url]?.let { (at, body) ->
+                if (System.currentTimeMillis() - at < CACHE_TTL_MS) {
+                    Log.d("PHTV-NET", "cache hit $url")
+                    return body
+                }
+            }
         }
+        var lastCode = 0
+        val backoff = longArrayOf(0L, 1000L, 2000L, 4000L)
+        for (attempt in backoff.indices) {
+            if (backoff[attempt] > 0) Thread.sleep(backoff[attempt])
+            val request = Request.Builder().url(url).header("Referer", referer).build()
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val body = response.body.string()
+                    if (useCache) cache[url] = System.currentTimeMillis() to body
+                    return body
+                }
+                lastCode = response.code
+                if (response.code != 403 && response.code != 429) {
+                    throw IOException("HTTP ${response.code} for $url")
+                }
+                Log.w("PHTV-NET", "HTTP ${response.code} (rate-limit) $url — retry ${attempt + 1}/${backoff.size - 1}")
+            }
+        }
+        throw IOException("Rate-limited by PornHub (HTTP $lastCode). Please wait a moment and retry.")
     }
 }
 

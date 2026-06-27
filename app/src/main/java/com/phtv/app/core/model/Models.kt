@@ -37,3 +37,28 @@ enum class SortOrder(val param: String, val label: String) {
     TOP_RATED("tr", "Top Rated"),
     NEWEST("cm", "Newest"),
 }
+
+/**
+ * Sexual-orientation segment. Each maps to a different PornHub URL space, and (the watch page aside)
+ * listings, categories and search all live under that segment's prefix. Verified 2026-06-28:
+ *  - straight: /video, /categories
+ *  - gay:      /gay/video, /gay/categories
+ *  - lesbian:  /lesbian/video, /lesbian/categories
+ *  - trans:    /transgender (query-param based), no /video sub-path
+ */
+enum class Orientation(
+    val label: String,
+    val glyph: String,
+    private val listBase: String,
+    private val searchBase: String,
+    val categoriesPath: String?,
+) {
+    STRAIGHT("Straight", "⚤", "/video", "/video/search", "/categories"),
+    GAY("Gay", "⚣", "/gay/video", "/gay/video/search", "/gay/categories"),
+    LESBIAN("Lesbian", "⚢", "/lesbian/video", "/lesbian/video/search", "/lesbian/categories"),
+    TRANS("Trans", "⚧", "/transgender", "/transgender/video/search", "/transgender/categories");
+
+    fun homePath(sortParam: String, page: Int) = "$listBase?o=$sortParam&page=$page"
+    fun categoryPath(id: String, sortParam: String, page: Int) = "$listBase?c=$id&o=$sortParam&page=$page"
+    fun searchPath(encodedQuery: String, page: Int) = "$searchBase?search=$encodedQuery&page=$page"
+}
