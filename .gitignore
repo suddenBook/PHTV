@@ -1,0 +1,27 @@
+# Gradle
+.gradle/
+build/
+**/build/
+
+# Android Studio / IntelliJ
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Local SDK path + secrets (never commit)
+local.properties
+keystore.properties
+*.jks
+*.keystore
+
+# Build artifacts
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# OS / logs
+.DS_Store
+*.log
