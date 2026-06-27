@@ -3,10 +3,11 @@
 package com.phtv.app.ui.player
 
 import android.util.Log
-import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -24,7 +25,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -49,10 +57,12 @@ private const val SEEK_MS = 10_000L
 private val Accent = Color(0xFFFF9000)
 
 /**
- * Fullscreen Media3 player.
- *  - Highest quality first; silently steps down on error.
- *  - Controls stay hidden; LEFT/RIGHT seek instantly without showing controls.
- *  - Back shows controls first; a second Back exits.
+ * Fullscreen Media3 player. D-pad is handled in Compose (PlayerView is made non-focusable so it can't
+ * steal keys to pop its controller):
+ *  - LEFT/RIGHT seek ±10s instantly, no controls shown.
+ *  - OK toggles play/pause.
+ *  - Back reveals the controls (progress bar); a second Back exits.
+ * Highest quality first, silently stepping down (HLS → MP4) on error.
  */
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
@@ -64,46 +74,37 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
     var controllerVisible by remember { mutableStateOf(false) }
+    val keyFocus = remember { FocusRequester() }
 
     val player = remember {
         val http = DefaultHttpDataSource.Factory()
             .setUserAgent(PhHttp.USER_AGENT)
             .setDefaultRequestProperties(mapOf("Referer" to "${PhHttp.BASE}/"))
-        ExoPlayer.Builder(context)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(http))
-            .build()
+        ExoPlayer.Builder(context).setMediaSourceFactory(DefaultMediaSourceFactory(http)).build()
     }
 
     val playerView = remember {
         PlayerView(context).apply {
             this.player = player
             useController = true
-            controllerAutoShow = false // don't pop controls on key presses / playback
+            controllerAutoShow = false
+            controllerShowTimeoutMs = 0 // once revealed, stay until Back (predictable two-press exit)
+            // We own the D-pad in Compose, so stop the view (and its controls) from consuming keys.
+            isFocusable = false
+            isFocusableInTouchMode = false
+            descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
             setControllerVisibilityListener(
                 PlayerView.ControllerVisibilityListener { vis -> controllerVisible = vis == View.VISIBLE },
             )
-            // LEFT/RIGHT seek instantly while controls are hidden; otherwise let the controller handle them.
-            setOnKeyListener { _, keyCode, event ->
-                if (event.action != KeyEvent.ACTION_DOWN || isControllerFullyVisible) return@setOnKeyListener false
-                when (keyCode) {
-                    KeyEvent.KEYCODE_DPAD_LEFT -> {
-                        player.seekTo((player.currentPosition - SEEK_MS).coerceAtLeast(0)); true
-                    }
-                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                        player.seekTo(player.currentPosition + SEEK_MS); true
-                    }
-                    else -> false
-                }
-            }
         }
     }
 
     fun play(index: Int) {
-        val source = sources.getOrNull(index) ?: return
-        Log.d(TAG, "play index=$index quality=${source.qualityLabel}")
-        player.setMediaItem(
-            MediaItem.Builder().setUri(source.url).setMimeType(MimeTypes.APPLICATION_M3U8).build(),
-        )
+        val s = sources.getOrNull(index) ?: return
+        Log.d(TAG, "play index=$index quality=${s.qualityLabel} hls=${s.isHls}")
+        val item = MediaItem.Builder().setUri(s.url)
+        if (s.isHls) item.setMimeType(MimeTypes.APPLICATION_M3U8)
+        player.setMediaItem(item.build())
         player.prepare()
         player.playWhenReady = true
     }
@@ -114,10 +115,10 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
                 Log.e(TAG, "error=${e.errorCodeName} at index=$currentIndex", e)
                 if (currentIndex + 1 < sources.size) {
                     currentIndex += 1
-                    Log.w(TAG, "falling back to lower quality -> index=$currentIndex")
+                    Log.w(TAG, "falling back -> index=$currentIndex")
                     play(currentIndex)
                 } else {
-                    error = "Playback failed (${e.errorCodeName})"
+                    error = "Can't play this video — it may be geo-restricted, premium, or unavailable."
                     playerView.useController = false
                 }
             }
@@ -135,7 +136,6 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
 
     LaunchedEffect(viewkey) {
         try {
-            Log.d(TAG, "resolve start viewkey=$viewkey")
             val streams = repo.resolveStreams(viewkey)
             sources = streams.sources
             if (sources.isEmpty()) error = "No playable stream found" else { currentIndex = 0; play(0) }
@@ -147,14 +147,34 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
         }
     }
 
-    LaunchedEffect(Unit) { runCatching { playerView.requestFocus() } }
+    LaunchedEffect(Unit) { runCatching { keyFocus.requestFocus() } }
 
-    // First Back reveals controls; a second Back (controls visible) exits.
     BackHandler {
-        if (error == null && !controllerVisible) playerView.showController() else onBack()
+        if (error != null || controllerVisible) onBack() else playerView.showController()
     }
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .focusRequester(keyFocus)
+            .onKeyEvent { ev ->
+                if (ev.type != KeyEventType.KeyDown) return@onKeyEvent false
+                when (ev.key) {
+                    Key.DirectionLeft -> {
+                        player.seekTo((player.currentPosition - SEEK_MS).coerceAtLeast(0)); true
+                    }
+                    Key.DirectionRight -> {
+                        player.seekTo(player.currentPosition + SEEK_MS); true
+                    }
+                    Key.DirectionCenter, Key.Enter -> {
+                        player.playWhenReady = !player.playWhenReady; true
+                    }
+                    else -> false
+                }
+            }
+            .focusable(),
+    ) {
         AndroidView(factory = { playerView }, modifier = Modifier.fillMaxSize())
 
         if (loading) {

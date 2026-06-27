@@ -9,12 +9,15 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.io.IOException
 
 /**
- * Extracts the `flashvars_<id>` object embedded in a watch page and turns its `mediaDefinitions`
- * into a sorted list of playable HLS sources. URLs are signed and short-lived — resolve fresh
- * immediately before playback.
+ * Extracts playable sources for a watch page.
+ *  - [parse] reads the inline `flashvars_<id>` object: per-quality HLS masters + the `get_media` URL.
+ *  - [parseGetMedia] reads the JSON from that `get_media` endpoint: more HLS + progressive MP4 variants.
+ * URLs are signed and short-lived, so resolve fresh immediately before playback.
  */
 object FlashvarsParser {
     private const val TAG = "PHTV-FV"
@@ -24,28 +27,54 @@ object FlashvarsParser {
         coerceInputValues = true
     }
 
-    fun parse(html: String): VideoStreams {
+    data class Parsed(val streams: VideoStreams, val getMediaUrl: String?)
+
+    fun parse(html: String): Parsed {
         val raw = extractObject(html)
         if (raw == null) {
             Log.e(TAG, "flashvars object NOT found (html ${html.length} chars)")
             throw IOException("flashvars object not found on page")
         }
         val fv = json.decodeFromString(Flashvars.serializer(), raw)
-        val sources = fv.mediaDefinitions
+        val hls = fv.mediaDefinitions
             .filter { it.format.equals("hls", ignoreCase = true) && it.videoUrl.isNotBlank() }
-            .mapNotNull { def ->
-                val height = def.heightOrNull() ?: return@mapNotNull null
-                StreamSource(qualityLabel = "${height}p", height = height, url = def.videoUrl)
-            }
+            .mapNotNull { def -> def.heightOrNull()?.let { h -> StreamSource("${h}p", h, def.videoUrl, isHls = true) } }
             .distinctBy { it.height }
             .sortedByDescending { it.height }
-        Log.d(TAG, "mediaDefs=${fv.mediaDefinitions.size} hlsSources=${sources.size} qualities=${sources.map { it.height }}")
-        return VideoStreams(
-            title = fv.video_title.orEmpty(),
-            durationSeconds = fv.video_duration ?: 0,
-            posterUrl = fv.image_url.orEmpty(),
-            sources = sources,
+        val getMediaUrl = fv.mediaDefinitions.firstOrNull { it.videoUrl.contains("get_media") }?.videoUrl
+        Log.d(TAG, "flashvars hls=${hls.size} getMedia=${getMediaUrl != null}")
+        return Parsed(
+            VideoStreams(
+                title = fv.video_title.orEmpty(),
+                durationSeconds = fv.video_duration ?: 0,
+                posterUrl = fv.image_url.orEmpty(),
+                sources = hls,
+            ),
+            getMediaUrl,
         )
+    }
+
+    /** Parse the JSON array returned by the `get_media` endpoint into HLS + MP4 sources. */
+    fun parseGetMedia(body: String): List<StreamSource> {
+        val arr = runCatching { json.parseToJsonElement(body) as? JsonArray }.getOrNull() ?: return emptyList()
+        val out = mutableListOf<StreamSource>()
+        for (el in arr) {
+            val obj = runCatching { el.jsonObject }.getOrNull() ?: continue
+            val url = obj["videoUrl"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            if (url.isBlank() || url.contains("get_media")) continue
+            val format = obj["format"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            val height = obj["quality"]?.heightOrNull() ?: continue
+            val isHls = format.equals("hls", ignoreCase = true) || url.contains(".m3u8")
+            out += StreamSource("${height}p", height, url, isHls)
+        }
+        Log.d(TAG, "get_media sources=${out.size}")
+        return out
+    }
+
+    private fun JsonElement.heightOrNull(): Int? = when (this) {
+        is JsonPrimitive -> contentOrNull?.toIntOrNull()
+        is JsonArray -> mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.toIntOrNull() }.maxOrNull()
+        else -> null
     }
 
     /** Brace-balanced extraction so nested objects / strings containing braces don't truncate us. */

@@ -38,7 +38,7 @@ object PhHttp {
      * GET text. [useCache] serves a recent in-memory copy (good for listings, which we revisit a lot
      * while browsing) to avoid hammering the site. 403/429 are retried with exponential backoff.
      */
-    fun getText(url: String, referer: String = "$BASE/", useCache: Boolean = false): String {
+    fun getText(url: String, referer: String = "$BASE/", useCache: Boolean = false, xhr: Boolean = false): String {
         if (useCache) {
             cache[url]?.let { (at, body) ->
                 if (System.currentTimeMillis() - at < CACHE_TTL_MS) {
@@ -51,7 +51,9 @@ object PhHttp {
         val backoff = longArrayOf(0L, 1000L, 2000L, 4000L)
         for (attempt in backoff.indices) {
             if (backoff[attempt] > 0) Thread.sleep(backoff[attempt])
-            val request = Request.Builder().url(url).header("Referer", referer).build()
+            val request = Request.Builder().url(url).header("Referer", referer)
+                .apply { if (xhr) header("X-Requested-With", "XMLHttpRequest") }
+                .build()
             client.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
                     val body = response.body.string()

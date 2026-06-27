@@ -51,6 +51,7 @@ import com.phtv.app.core.model.Orientation
 import com.phtv.app.core.model.SortOrder
 import com.phtv.app.data.PornhubRepository
 import com.phtv.app.ui.components.VideoFeed
+import com.phtv.app.ui.player.PlayerScreen
 
 private val RAIL_COLLAPSED = 56.dp
 private val RAIL_EXPANDED = 248.dp
@@ -66,7 +67,7 @@ private enum class Section(val label: String, val glyph: String) {
  * and collapses again when a section is chosen or Back is pressed.
  */
 @Composable
-fun BrowseScreen(onPlay: (String) -> Unit) {
+fun BrowseScreen(initialViewkey: String? = null) {
     var orientationIndex by rememberSaveable { mutableIntStateOf(0) }
     var sectionIndex by rememberSaveable { mutableIntStateOf(0) }
     val orientation = Orientation.entries[orientationIndex]
@@ -77,6 +78,9 @@ fun BrowseScreen(onPlay: (String) -> Unit) {
     val contentFocus = remember { FocusRequester() }
     val repo = remember { PornhubRepository() }
     var focusTrigger by remember { mutableIntStateOf(0) }
+    // The player is an overlay on top of this (preserved) screen, so returning is instant and keeps place.
+    var playing by rememberSaveable { mutableStateOf(initialViewkey) }
+    val onPlay: (String) -> Unit = { playing = it }
 
     // Move focus into content on launch, on return from the player, and after picking a section.
     LaunchedEffect(focusTrigger, sectionIndex) { runCatching { contentFocus.requestFocus() } }
@@ -111,6 +115,11 @@ fun BrowseScreen(onPlay: (String) -> Unit) {
                 .width(railWidth)
                 .onFocusChanged { railFocused = it.hasFocus },
         )
+
+        // Fullscreen player overlay — browse stays composed beneath it (no reload on Back).
+        playing?.let { vk ->
+            PlayerScreen(viewkey = vk, onBack = { playing = null; focusTrigger++ })
+        }
     }
 }
 

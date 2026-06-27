@@ -12,11 +12,12 @@ data class Video(
     val uploader: String = "",
 )
 
-/** A single playable quality variant of a video. */
+/** A single playable quality variant of a video (HLS master playlist or progressive MP4). */
 data class StreamSource(
     val qualityLabel: String,
     val height: Int,
     val url: String,
+    val isHls: Boolean = true,
 )
 
 /** Resolved playback info for one video (from flashvars on the watch page). */

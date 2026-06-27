@@ -36,9 +36,18 @@ class PornhubRepository {
     suspend fun resolveStreams(viewkey: String): VideoStreams = withContext(Dispatchers.IO) {
         try {
             val html = PhHttp.getText("${PhHttp.BASE}/view_video.php?viewkey=$viewkey")
-            val streams = FlashvarsParser.parse(html)
-            Log.d(TAG, "resolve $viewkey -> ${streams.sources.size} sources best=${streams.best?.qualityLabel}")
-            streams
+            val parsed = FlashvarsParser.parse(html)
+            var sources = parsed.streams.sources
+            // Augment with the get_media endpoint (fresh URLs + progressive MP4 fallbacks).
+            parsed.getMediaUrl?.let { url ->
+                runCatching { FlashvarsParser.parseGetMedia(PhHttp.getText(url, xhr = true)) }
+                    .onSuccess { extra -> if (extra.isNotEmpty()) sources = (sources + extra).distinctBy { it.url } }
+                    .onFailure { Log.w(TAG, "get_media failed: ${it.message}") }
+            }
+            // Prefer HLS (adaptive) first, then progressive MP4; highest quality first within each.
+            sources = sources.sortedWith(compareByDescending<com.phtv.app.core.model.StreamSource> { it.isHls }.thenByDescending { it.height })
+            Log.d(TAG, "resolve $viewkey -> ${sources.size} sources best=${sources.firstOrNull()?.qualityLabel}")
+            parsed.streams.copy(sources = sources)
         } catch (t: Throwable) {
             Log.e(TAG, "resolve $viewkey FAILED: ${t.message}", t)
             throw t

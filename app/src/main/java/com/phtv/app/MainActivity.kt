@@ -14,7 +14,7 @@ class MainActivity : ComponentActivity() {
         val startViewkey = intent?.getStringExtra("viewkey")?.takeIf { it.isNotBlank() }
         setContent {
             PhtvTheme {
-                PhtvNavHost(startViewkey = startViewkey, onExitApp = { finish() })
+                PhtvNavHost(startViewkey = startViewkey)
             }
         }
     }
