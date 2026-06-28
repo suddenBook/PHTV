@@ -14,8 +14,8 @@ android {
         applicationId = "com.phtv.app"
         minSdk = 23
         targetSdk = 37
-        versionCode = 5
-        versionName = "0.5"
+        versionCode = 10
+        versionName = "1.0"
     }
 
     signingConfigs {

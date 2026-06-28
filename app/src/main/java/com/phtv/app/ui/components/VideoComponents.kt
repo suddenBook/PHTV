@@ -47,6 +47,7 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import com.phtv.app.core.model.Video
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private val Accent = Color(0xFFFF9000)
@@ -54,7 +55,11 @@ private val Accent = Color(0xFFFF9000)
 /** A focusable video card: large thumbnail with duration overlay + readable 2-line title. */
 @Composable
 fun VideoCard(video: Video, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    Card(onClick = onClick, modifier = modifier.fillMaxWidth()) {
+    var focused by remember { mutableStateOf(false) }
+    Card(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth().onFocusChanged { focused = it.hasFocus },
+    ) {
         Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color(0xFF2A2A2A))) {
             AsyncImage(
                 model = video.thumbUrl,
@@ -78,7 +83,8 @@ fun VideoCard(video: Video, onClick: () -> Unit, modifier: Modifier = Modifier) 
         Text(
             text = video.title,
             style = MaterialTheme.typography.titleMedium,
-            maxLines = 2,
+            // Expand to the full title while focused; truncate to 2 lines otherwise.
+            maxLines = if (focused) 8 else 2,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
         )
@@ -96,6 +102,7 @@ fun VideoFeed(
     onPlay: (String) -> Unit,
     modifier: Modifier = Modifier,
     columns: Int = 4,
+    restoreSignal: Int = 0,
     fetchPage: suspend (Int) -> List<Video>,
 ) {
     val items = remember(feedKey) { mutableStateListOf<Video>() }
@@ -105,7 +112,8 @@ fun VideoFeed(
     var endReached by remember(feedKey) { mutableStateOf(false) }
     var error by remember(feedKey) { mutableStateOf<String?>(null) }
     var feedHasFocus by remember(feedKey) { mutableStateOf(false) }
-    val firstItem = remember(feedKey) { FocusRequester() }
+    val restorer = remember(feedKey) { FocusRequester() }
+    var restoreIndex by remember(feedKey) { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
     val fetch by rememberUpdatedState(fetchPage)
 
@@ -133,8 +141,15 @@ fun VideoFeed(
 
     LaunchedEffect(feedKey) { if (items.isEmpty()) loadNext() }
     // Hand focus to the first card once results arrive (only if the feed already holds focus).
+    // Grab focus to the grid as soon as results arrive so launch / section changes land on a card
+    // instead of the rail.
     LaunchedEffect(items.isEmpty()) {
-        if (items.isNotEmpty() && feedHasFocus) runCatching { firstItem.requestFocus() }
+        if (items.isNotEmpty()) repeat(3) { runCatching { restorer.requestFocus() }; delay(70) }
+    }
+    // Re-focus the played card only when explicitly asked (player return / section change), not on
+    // every focus change — so drifting back into the grid doesn't scroll it. Target is set on click.
+    LaunchedEffect(restoreSignal) {
+        if (restoreSignal != 0 && items.isNotEmpty()) repeat(3) { runCatching { restorer.requestFocus() }; delay(50) }
     }
 
     val gridState = rememberLazyGridState()
@@ -159,8 +174,8 @@ fun VideoFeed(
                 itemsIndexed(items = items, key = { _, v -> v.viewkey }) { index, video ->
                     VideoCard(
                         video = video,
-                        onClick = { onPlay(video.viewkey) },
-                        modifier = if (index == 0) Modifier.focusRequester(firstItem) else Modifier,
+                        onClick = { restoreIndex = index; onPlay(video.viewkey) },
+                        modifier = if (index == restoreIndex) Modifier.focusRequester(restorer) else Modifier,
                     )
                 }
                 if (loading || error != null) {

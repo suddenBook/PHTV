@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.CircularProgressIndicator
@@ -23,11 +24,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -35,6 +38,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
@@ -54,6 +58,7 @@ import com.phtv.app.R
 import com.phtv.app.core.model.StreamSource
 import com.phtv.app.core.network.PhHttp
 import com.phtv.app.data.PornhubRepository
+import kotlinx.coroutines.delay
 
 private const val TAG = "PHTV-PLAYER"
 private const val SEEK_MS = 10_000L
@@ -76,8 +81,10 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
     var currentIndex by remember { mutableIntStateOf(0) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
+    var title by remember { mutableStateOf("") }
     var controllerVisible by remember { mutableStateOf(false) }
     val keyFocus = remember { FocusRequester() }
+    val latestOnBack by rememberUpdatedState(onBack)
 
     val player = remember {
         val http = DefaultHttpDataSource.Factory()
@@ -92,7 +99,7 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
         (LayoutInflater.from(context).inflate(R.layout.player_view, null) as PlayerView).apply {
             this.player = player
             controllerAutoShow = false
-            controllerShowTimeoutMs = 4000 // auto-hide controls 4s after they're revealed
+            controllerShowTimeoutMs = 2000 // controls (and title) auto-hide 2s after they're revealed
             // Pillarbox portrait videos instead of stretching them to fill a 16:9 surface.
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
             // We own the D-pad in Compose, so stop the view (and its controls) from consuming keys.
@@ -116,6 +123,7 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
     }
 
     DisposableEffect(Unit) {
+        var autoShown = false
         val listener = object : Player.Listener {
             override fun onPlayerError(e: PlaybackException) {
                 Log.e(TAG, "error=${e.errorCodeName} at index=$currentIndex", e)
@@ -131,6 +139,11 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
 
             override fun onPlaybackStateChanged(state: Int) {
                 Log.d(TAG, "state=$state (2=BUFFERING,3=READY,4=ENDED)")
+                if (state == Player.STATE_READY && !autoShown) {
+                    autoShown = true
+                    playerView.showController() // briefly flash controls + title when playback starts
+                }
+                if (state == Player.STATE_ENDED) latestOnBack() // auto-return to the grid when finished
             }
         }
         player.addListener(listener)
@@ -143,6 +156,7 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
     LaunchedEffect(viewkey) {
         try {
             val streams = repo.resolveStreams(viewkey)
+            title = streams.title
             sources = streams.sources
             if (sources.isEmpty()) error = "No playable stream found" else { currentIndex = 0; play(0) }
         } catch (t: Throwable) {
@@ -153,7 +167,8 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
         }
     }
 
-    LaunchedEffect(Unit) { runCatching { keyFocus.requestFocus() } }
+    // Retry so the player reliably takes focus from the content once it releases it (enables D-pad seek).
+    LaunchedEffect(Unit) { repeat(5) { runCatching { keyFocus.requestFocus() }; delay(60) } }
 
     // Back dismisses the controls if they're showing; otherwise it leaves the player.
     BackHandler {
@@ -189,6 +204,25 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
             .focusable(),
     ) {
         AndroidView(factory = { playerView }, modifier = Modifier.fillMaxSize())
+
+        // Title bar across the top, shown together with the player controls.
+        if (controllerVisible && title.isNotBlank()) {
+            Box(
+                Modifier
+                    .align(Alignment.TopStart)
+                    .fillMaxWidth()
+                    .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.75f), Color.Transparent)))
+                    .padding(horizontal = 32.dp, vertical = 20.dp),
+            ) {
+                Text(
+                    title,
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleLarge,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
 
         if (loading) {
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {

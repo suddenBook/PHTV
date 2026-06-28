@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalTvMaterial3Api::class)
+@file:OptIn(ExperimentalTvMaterial3Api::class, ExperimentalComposeUiApi::class)
 
 package com.phtv.app.ui.browse
 
@@ -33,13 +33,21 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.focusGroup
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
@@ -54,26 +62,37 @@ import com.phtv.app.core.model.SortOrder
 import com.phtv.app.data.PornhubRepository
 import com.phtv.app.ui.components.VideoFeed
 import com.phtv.app.ui.player.PlayerScreen
+import kotlinx.coroutines.delay
 
 private val RAIL_COLLAPSED = 56.dp
 private val RAIL_EXPANDED = 248.dp
 private val Accent = Color(0xFFFF9000)
 
-private enum class Section(val label: String, val glyph: String) {
-    HOME("Home", "H"), CATEGORIES("Categories", "C"), SEARCH("Search", "S")
+/**
+ * Sidebar destinations. The four rank/sort methods are first-class rail items (aligned with 91 TV's
+ * channel rail), followed by Categories and Search. [sort] is non-null for the rank feeds.
+ */
+private enum class RailDest(val label: String, val glyph: String, val sort: SortOrder?) {
+    HOTTEST("Hottest", "H", SortOrder.HOT),
+    MOST_VIEWED("Most Viewed", "V", SortOrder.MOST_VIEWED),
+    TOP_RATED("Top Rated", "★", SortOrder.TOP_RATED),
+    NEWEST("Newest", "N", SortOrder.NEWEST),
+    CATEGORIES("Categories", "C", null),
+    SEARCH("Search", "S", null),
 }
 
 /**
- * Browse shell. A collapsible overlay rail with an orientation switch sits over the content.
- * Focus stays in the content by default; the rail expands only when the user navigates LEFT into it,
- * and collapses again when a section is chosen or Back is pressed.
+ * Browse shell. A collapsible overlay rail holds the orientation switch, the four rank methods
+ * (Hottest / Most Viewed / Top Rated / Newest), then Categories and Search. Focus stays in the content
+ * by default; the rail expands only when the user navigates LEFT into it, and collapses again when a
+ * destination is chosen or Back is pressed.
  */
 @Composable
 fun BrowseScreen(initialViewkey: String? = null) {
     var orientationIndex by rememberSaveable { mutableIntStateOf(0) }
-    var sectionIndex by rememberSaveable { mutableIntStateOf(0) }
+    var destIndex by rememberSaveable { mutableIntStateOf(0) }
     val orientation = Orientation.entries[orientationIndex]
-    val section = Section.entries[sectionIndex]
+    val dest = RailDest.entries[destIndex]
 
     var railFocused by remember { mutableStateOf(false) }
     val railWidth by animateDpAsState(if (railFocused) RAIL_EXPANDED else RAIL_COLLAPSED, label = "rail")
@@ -83,11 +102,16 @@ fun BrowseScreen(initialViewkey: String? = null) {
     // The player is an overlay on top of this (preserved) screen, so returning is instant and keeps place.
     var playing by rememberSaveable { mutableStateOf(initialViewkey) }
     var showExit by remember { mutableStateOf(false) }
+    var lastKeyLeft by remember { mutableStateOf(false) }
+    var bounceSignal by remember { mutableIntStateOf(0) }
     val onPlay: (String) -> Unit = { playing = it }
     val context = LocalContext.current
 
-    // Move focus into content on launch, on return from the player, and after picking a section.
-    LaunchedEffect(focusTrigger, sectionIndex) { runCatching { contentFocus.requestFocus() } }
+    // Move focus into content on launch, on return from the player, and after picking a destination.
+    LaunchedEffect(focusTrigger, destIndex) { runCatching { contentFocus.requestFocus() } }
+    // If the rail was entered by drifting (Down/Up/Right) rather than an intentional LEFT, bounce focus
+    // back into the content so the grid can't "fall out" to the rail.
+    LaunchedEffect(bounceSignal) { if (bounceSignal > 0) runCatching { contentFocus.requestFocus() } }
     // Lowest-priority Back at the browse root → confirm before leaving. Handlers composed later or in
     // children take precedence while enabled (rail collapse, category back, the player, the dialog).
     BackHandler(enabled = playing == null && !railFocused && !showExit) { showExit = true }
@@ -100,12 +124,27 @@ fun BrowseScreen(initialViewkey: String? = null) {
                 .fillMaxSize()
                 .padding(start = RAIL_COLLAPSED)
                 .focusRequester(contentFocus)
+                .onPreviewKeyEvent { ev ->
+                    if (ev.type == KeyEventType.KeyDown) lastKeyLeft = ev.key == Key.DirectionLeft
+                    false
+                }
+                // The rail is only reachable by pressing LEFT out of the content; never by drifting
+                // up/down/right (so pressing Down at the bottom of the grid stays in the grid).
+                .focusProperties {
+                    // Trap focus in the content (rail only via LEFT) — but release it freely while an
+                    // overlay (player or exit dialog) is up so the overlay can take focus.
+                    exit = { dir ->
+                        if (playing != null || showExit || dir == FocusDirection.Left) FocusRequester.Default
+                        else FocusRequester.Cancel
+                    }
+                }
                 .focusGroup(),
         ) {
-            when (section) {
-                Section.HOME -> HomeSection(repo, orientation, onPlay)
-                Section.CATEGORIES -> CategoriesSection(repo, orientation, onPlay, requestContentFocus = { focusTrigger++ })
-                Section.SEARCH -> SearchSection(repo, orientation, onPlay)
+            val sort = dest.sort
+            when {
+                sort != null -> SortFeed(repo, orientation, sort, onPlay, focusTrigger)
+                dest == RailDest.CATEGORIES -> CategoriesSection(repo, orientation, onPlay, requestContentFocus = { focusTrigger++ })
+                else -> SearchSection(repo, orientation, onPlay)
             }
         }
         if (railFocused) {
@@ -115,13 +154,19 @@ fun BrowseScreen(initialViewkey: String? = null) {
             expanded = railFocused,
             orientation = orientation,
             onCycleOrientation = { orientationIndex = (orientationIndex + 1) % Orientation.entries.size },
-            selected = section,
-            onSelectSection = { sectionIndex = it.ordinal; focusTrigger++ },
+            selected = dest,
+            onSelectDest = { destIndex = it.ordinal; focusTrigger++ },
             modifier = Modifier
                 .fillMaxHeight()
                 .width(railWidth)
-                .onFocusChanged { railFocused = it.hasFocus },
+                .onFocusChanged {
+                    railFocused = it.hasFocus
+                    if (it.hasFocus && !lastKeyLeft) bounceSignal++
+                },
         )
+
+        // Clock in the top-right corner, shown on every browse screen (the player overlay covers it).
+        ClockOverlay(Modifier.align(Alignment.TopEnd).padding(top = 18.dp, end = 28.dp))
 
         // Fullscreen player overlay — browse stays composed beneath it (no reload on Back).
         playing?.let { vk ->
@@ -144,12 +189,18 @@ private fun NavRail(
     expanded: Boolean,
     orientation: Orientation,
     onCycleOrientation: () -> Unit,
-    selected: Section,
-    onSelectSection: (Section) -> Unit,
+    selected: RailDest,
+    onSelectDest: (RailDest) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // When the rail gains focus (user pressed LEFT), jump to the currently-selected item.
+    val selectedFocus = remember { FocusRequester() }
+    LaunchedEffect(expanded) { if (expanded) runCatching { selectedFocus.requestFocus() } }
     Column(
-        modifier.background(Color(0xFF1A1A1A)).padding(vertical = 24.dp, horizontal = 10.dp),
+        modifier
+            .background(Color(0xFF1A1A1A))
+            .padding(vertical = 24.dp, horizontal = 10.dp)
+            .focusGroup(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
@@ -169,13 +220,14 @@ private fun NavRail(
             onClick = onCycleOrientation,
         )
         Spacer(Modifier.height(16.dp))
-        Section.entries.forEach { item ->
+        RailDest.entries.forEach { item ->
             RailItem(
                 glyph = item.glyph,
                 label = item.label,
                 contentColor = if (item == selected) Accent else Color.White,
                 expanded = expanded,
-                onClick = { onSelectSection(item) },
+                onClick = { onSelectDest(item) },
+                modifier = if (item == selected) Modifier.focusRequester(selectedFocus) else Modifier,
             )
         }
     }
@@ -188,8 +240,9 @@ private fun RailItem(
     contentColor: Color,
     expanded: Boolean,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Surface(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+    Surface(onClick = onClick, modifier = modifier.fillMaxWidth()) {
         Row(
             Modifier.padding(horizontal = 10.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -203,37 +256,28 @@ private fun RailItem(
     }
 }
 
+/** A rank feed (Hottest / Most Viewed / Top Rated / Newest) — the sort is chosen from the rail. */
 @Composable
-private fun HomeSection(repo: PornhubRepository, orientation: Orientation, onPlay: (String) -> Unit) {
-    var sortIndex by rememberSaveable { mutableIntStateOf(0) }
-    val sort = SortOrder.entries[sortIndex]
+private fun SortFeed(
+    repo: PornhubRepository,
+    orientation: Orientation,
+    sort: SortOrder,
+    onPlay: (String) -> Unit,
+    restoreSignal: Int,
+) {
     Column(Modifier.fillMaxSize()) {
-        SortBar(selected = sort, onSelect = { sortIndex = it.ordinal })
+        Text(
+            sort.label,
+            color = Accent,
+            style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.padding(start = 28.dp, top = 18.dp, bottom = 4.dp),
+        )
         VideoFeed(
             feedKey = "home:${orientation.name}:${sort.param}",
             onPlay = onPlay,
             modifier = Modifier.weight(1f),
+            restoreSignal = restoreSignal,
         ) { repo.home(orientation, it, sort) }
-    }
-}
-
-@Composable
-private fun SortBar(selected: SortOrder, onSelect: (SortOrder) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(start = 28.dp, top = 18.dp, end = 28.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("Sort:", color = Color.White.copy(alpha = 0.7f))
-        SortOrder.entries.forEach { order ->
-            Surface(onClick = { onSelect(order) }) {
-                Text(
-                    order.label,
-                    color = if (order == selected) Accent else Color.White,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                )
-            }
-        }
     }
 }
 
@@ -373,7 +417,7 @@ private fun ExitConfirm(appName: String, onConfirm: () -> Unit, onDismiss: () ->
     val cancelFocus = remember { FocusRequester() }
     BackHandler { onDismiss() }
     Box(
-        Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.75f)),
+        Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.75f)).focusGroup(),
         contentAlignment = Alignment.Center,
     ) {
         Column(Modifier.width(440.dp).background(Color(0xFF1E1E1E)).padding(28.dp)) {
@@ -387,5 +431,25 @@ private fun ExitConfirm(appName: String, onConfirm: () -> Unit, onDismiss: () ->
             }
         }
     }
-    LaunchedEffect(Unit) { runCatching { cancelFocus.requestFocus() } }
+    // Retry until the Cancel button is laid out and actually takes focus (it appears over the grid).
+    LaunchedEffect(Unit) { repeat(6) { runCatching { cancelFocus.requestFocus() }; delay(50) } }
+}
+
+/** Live HH:mm clock for the top corner of the browse UI (hidden behind the fullscreen player). */
+@Composable
+private fun ClockOverlay(modifier: Modifier = Modifier) {
+    val format = remember { java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()) }
+    var now by remember { mutableStateOf(format.format(java.util.Date())) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            now = format.format(java.util.Date())
+            delay(10_000)
+        }
+    }
+    Text(
+        now,
+        color = Color.White.copy(alpha = 0.85f),
+        style = MaterialTheme.typography.titleMedium,
+        modifier = modifier,
+    )
 }
