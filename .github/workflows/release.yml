@@ -31,7 +31,23 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: "platform-tools platforms;android-37 build-tools;37.0.0"
+          packages: "platform-tools"
+
+      - name: Install Android platform and build-tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          install_pkg() {
+            local pkg="$1"
+            echo "Installing $pkg ..."
+            if sdkmanager "$pkg" >/dev/null; then return 0; fi
+            echo "Package $pkg not in the default channel; retrying preview channels ..."
+            sdkmanager --channel=3 "$pkg"
+          }
+          # compileSdk = 37 resolves to the minor-versioned platform package "android-37.0".
+          install_pkg "platforms;android-37.0"
+          install_pkg "build-tools;37.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
