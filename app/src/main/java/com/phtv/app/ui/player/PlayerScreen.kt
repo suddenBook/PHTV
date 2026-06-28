@@ -40,6 +40,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
@@ -83,6 +84,7 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
     var loading by remember { mutableStateOf(true) }
     var title by remember { mutableStateOf("") }
     var controllerVisible by remember { mutableStateOf(false) }
+    var initialControlsShown by remember { mutableStateOf(false) }
     val keyFocus = remember { FocusRequester() }
     val latestOnBack by rememberUpdatedState(onBack)
 
@@ -123,15 +125,16 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
     }
 
     DisposableEffect(Unit) {
-        var autoShown = false
         val listener = object : Player.Listener {
             override fun onPlayerError(e: PlaybackException) {
                 Log.e(TAG, "error=${e.errorCodeName} at index=$currentIndex", e)
                 if (currentIndex + 1 < sources.size) {
+                    loading = true
                     currentIndex += 1
                     Log.w(TAG, "falling back -> index=$currentIndex")
                     play(currentIndex)
                 } else {
+                    loading = false
                     error = "Can't play this video — it may be geo-restricted, premium, or unavailable."
                     playerView.useController = false
                 }
@@ -139,9 +142,8 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
 
             override fun onPlaybackStateChanged(state: Int) {
                 Log.d(TAG, "state=$state (2=BUFFERING,3=READY,4=ENDED)")
-                if (state == Player.STATE_READY && !autoShown) {
-                    autoShown = true
-                    playerView.showController() // briefly flash controls + title when playback starts
+                if (state == Player.STATE_READY) {
+                    loading = false
                 }
                 if (state == Player.STATE_ENDED) latestOnBack() // auto-return to the grid when finished
             }
@@ -158,17 +160,30 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
             val streams = repo.resolveStreams(viewkey)
             title = streams.title
             sources = streams.sources
-            if (sources.isEmpty()) error = "No playable stream found" else { currentIndex = 0; play(0) }
+            if (sources.isEmpty()) {
+                loading = false
+                error = "No playable stream found"
+            } else {
+                currentIndex = 0
+                play(0)
+            }
         } catch (t: Throwable) {
             Log.e(TAG, "resolve/play failed for $viewkey", t)
-            error = t.message ?: "Failed to load video"
-        } finally {
             loading = false
+            error = t.message ?: "Failed to load video"
         }
     }
 
     // Retry so the player reliably takes focus from the content once it releases it (enables D-pad seek).
     LaunchedEffect(Unit) { repeat(5) { runCatching { keyFocus.requestFocus() }; delay(60) } }
+
+    // READY attaches the AndroidView on the next composition. Reveal controls only after that attachment.
+    LaunchedEffect(loading, error) {
+        if (!loading && error == null && !initialControlsShown) {
+            initialControlsShown = true
+            playerView.showController()
+        }
+    }
 
     // Back dismisses the controls if they're showing; otherwise it leaves the player.
     BackHandler {
@@ -203,7 +218,11 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
             }
             .focusable(),
     ) {
-        AndroidView(factory = { playerView }, modifier = Modifier.fillMaxSize())
+        // TextureView-backed AndroidViews can render above later Compose siblings despite zIndex.
+        // Keep it detached until READY so the loading UI is guaranteed to remain visible.
+        if (!loading && error == null) {
+            AndroidView(factory = { playerView }, modifier = Modifier.fillMaxSize())
+        }
 
         // Title bar across the top, shown together with the player controls.
         if (controllerVisible && title.isNotBlank()) {
@@ -225,16 +244,29 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
         }
 
         if (loading) {
-            Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-                CircularProgressIndicator(color = Accent)
-                Spacer(Modifier.height(16.dp))
-                Text("Loading video…", color = Color.White)
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .zIndex(1f)
+                    .background(Color.Black),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = Accent)
+                    Spacer(Modifier.height(16.dp))
+                    Text("Loading video…", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Connecting to PornHub — retries may take a few seconds",
+                        color = Color.White.copy(alpha = 0.65f),
+                    )
+                }
             }
         }
 
         error?.let { message ->
             Column(
-                Modifier.align(Alignment.Center).padding(40.dp),
+                Modifier.align(Alignment.Center).zIndex(2f).padding(40.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text("⚠  $message", color = Color.White, style = MaterialTheme.typography.headlineSmall)
