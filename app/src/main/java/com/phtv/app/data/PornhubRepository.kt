@@ -26,10 +26,14 @@ class PornhubRepository {
 
     /** Category taxonomy for an orientation (straight uses the bundled list; others are scraped live). */
     suspend fun categories(orientation: Orientation): List<Category> = withContext(Dispatchers.IO) {
-        if (orientation == Orientation.STRAIGHT) return@withContext Categories.ALL
-        val path = orientation.categoriesPath ?: return@withContext emptyList()
-        val parsed = HtmlParser.parseCategories(PhHttp.getText(PhHttp.BASE + path, useCache = true))
-        parsed.ifEmpty { if (orientation == Orientation.STRAIGHT) Categories.ALL else parsed }
+        val list = if (orientation == Orientation.STRAIGHT) {
+            Categories.ALL
+        } else {
+            val path = orientation.categoriesPath ?: return@withContext emptyList()
+            HtmlParser.parseCategories(PhHttp.getText(PhHttp.BASE + path, useCache = true))
+        }
+        // Present categories A–Z rather than in PornHub's internal id order.
+        list.sortedBy { it.name.lowercase() }
     }
 
     /** Resolve fresh playback URLs right before playing; PornHub stream URLs are signed and expire. */

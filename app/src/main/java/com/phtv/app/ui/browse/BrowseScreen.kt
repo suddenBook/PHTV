@@ -2,6 +2,7 @@
 
 package com.phtv.app.ui.browse
 
+import android.app.Activity
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
@@ -39,6 +40,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Button
@@ -80,10 +82,15 @@ fun BrowseScreen(initialViewkey: String? = null) {
     var focusTrigger by remember { mutableIntStateOf(0) }
     // The player is an overlay on top of this (preserved) screen, so returning is instant and keeps place.
     var playing by rememberSaveable { mutableStateOf(initialViewkey) }
+    var showExit by remember { mutableStateOf(false) }
     val onPlay: (String) -> Unit = { playing = it }
+    val context = LocalContext.current
 
     // Move focus into content on launch, on return from the player, and after picking a section.
     LaunchedEffect(focusTrigger, sectionIndex) { runCatching { contentFocus.requestFocus() } }
+    // Lowest-priority Back at the browse root → confirm before leaving. Handlers composed later or in
+    // children take precedence while enabled (rail collapse, category back, the player, the dialog).
+    BackHandler(enabled = playing == null && !railFocused && !showExit) { showExit = true }
     // While the rail is open, the first Back collapses it (returns focus to content) instead of exiting.
     BackHandler(enabled = railFocused) { runCatching { contentFocus.requestFocus() } }
 
@@ -119,6 +126,15 @@ fun BrowseScreen(initialViewkey: String? = null) {
         // Fullscreen player overlay — browse stays composed beneath it (no reload on Back).
         playing?.let { vk ->
             PlayerScreen(viewkey = vk, onBack = { playing = null; focusTrigger++ })
+        }
+
+        // Exit confirmation — topmost overlay so its Back/focus take precedence.
+        if (showExit) {
+            ExitConfirm(
+                appName = "PH TV",
+                onConfirm = { (context as? Activity)?.finish() },
+                onDismiss = { showExit = false },
+            )
         }
     }
 }
@@ -349,4 +365,27 @@ private fun CenterRetry(message: String, onRetry: () -> Unit) {
         Button(onClick = onRetry, modifier = Modifier.focusRequester(focus)) { Text("Retry") }
     }
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+}
+
+/** Full-screen "are you sure you want to leave?" overlay. Focus starts on Cancel; Back dismisses it. */
+@Composable
+private fun ExitConfirm(appName: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    val cancelFocus = remember { FocusRequester() }
+    BackHandler { onDismiss() }
+    Box(
+        Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.75f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(Modifier.width(440.dp).background(Color(0xFF1E1E1E)).padding(28.dp)) {
+            Text("Exit $appName?", style = MaterialTheme.typography.titleLarge, color = Color.White)
+            Spacer(Modifier.height(8.dp))
+            Text("Press Exit to leave, or Cancel to keep browsing.", color = Color.White.copy(alpha = 0.7f))
+            Spacer(Modifier.height(24.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Button(onClick = onConfirm) { Text("Exit") }
+                Button(onClick = onDismiss, modifier = Modifier.focusRequester(cancelFocus)) { Text("Cancel") }
+            }
+        }
+    }
+    LaunchedEffect(Unit) { runCatching { cancelFocus.requestFocus() } }
 }

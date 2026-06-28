@@ -3,6 +3,7 @@
 package com.phtv.app.ui.player
 
 import android.util.Log
+import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
@@ -44,10 +45,12 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import com.phtv.app.R
 import com.phtv.app.core.model.StreamSource
 import com.phtv.app.core.network.PhHttp
 import com.phtv.app.data.PornhubRepository
@@ -84,11 +87,14 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
     }
 
     val playerView = remember {
-        PlayerView(context).apply {
+        // Inflated from XML so the surface is a TextureView (see player_view.xml) — this prevents the
+        // transient "stuck stretched" glitch on portrait videos that a SurfaceView can exhibit.
+        (LayoutInflater.from(context).inflate(R.layout.player_view, null) as PlayerView).apply {
             this.player = player
-            useController = true
             controllerAutoShow = false
             controllerShowTimeoutMs = 4000 // auto-hide controls 4s after they're revealed
+            // Pillarbox portrait videos instead of stretching them to fill a 16:9 surface.
+            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
             // We own the D-pad in Compose, so stop the view (and its controls) from consuming keys.
             isFocusable = false
             isFocusableInTouchMode = false
