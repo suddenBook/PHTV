@@ -88,7 +88,7 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
             this.player = player
             useController = true
             controllerAutoShow = false
-            controllerShowTimeoutMs = 0 // once revealed, stay until Back (predictable two-press exit)
+            controllerShowTimeoutMs = 4000 // auto-hide controls 4s after they're revealed
             // We own the D-pad in Compose, so stop the view (and its controls) from consuming keys.
             isFocusable = false
             isFocusableInTouchMode = false
@@ -149,8 +149,13 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
 
     LaunchedEffect(Unit) { runCatching { keyFocus.requestFocus() } }
 
+    // Back dismisses the controls if they're showing; otherwise it leaves the player.
     BackHandler {
-        if (error != null || controllerVisible) onBack() else playerView.showController()
+        when {
+            error != null -> onBack()
+            controllerVisible -> playerView.hideController()
+            else -> onBack()
+        }
     }
 
     Box(
@@ -168,8 +173,10 @@ fun PlayerScreen(viewkey: String, onBack: () -> Unit) {
                         player.seekTo(player.currentPosition + SEEK_MS); true
                     }
                     Key.DirectionCenter, Key.Enter -> {
-                        player.playWhenReady = !player.playWhenReady; true
+                        player.playWhenReady = !player.playWhenReady
+                        playerView.showController(); true
                     }
+                    Key.DirectionUp, Key.DirectionDown -> { playerView.showController(); true }
                     else -> false
                 }
             }
