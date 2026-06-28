@@ -52,6 +52,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Button
+import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
@@ -97,6 +98,7 @@ fun BrowseScreen(initialViewkey: String? = null) {
     var railFocused by remember { mutableStateOf(false) }
     val railWidth by animateDpAsState(if (railFocused) RAIL_EXPANDED else RAIL_COLLAPSED, label = "rail")
     val contentFocus = remember { FocusRequester() }
+    val selectedRailFocus = remember { FocusRequester() }
     val repo = remember { PornhubRepository() }
     var focusTrigger by remember { mutableIntStateOf(0) }
     // The player is an overlay on top of this (preserved) screen, so returning is instant and keeps place.
@@ -134,8 +136,11 @@ fun BrowseScreen(initialViewkey: String? = null) {
                     // Trap focus in the content (rail only via LEFT) — but release it freely while an
                     // overlay (player or exit dialog) is up so the overlay can take focus.
                     exit = { dir ->
-                        if (playing != null || showExit || dir == FocusDirection.Left) FocusRequester.Default
-                        else FocusRequester.Cancel
+                        when {
+                            playing != null || showExit -> FocusRequester.Default
+                            dir == FocusDirection.Left -> selectedRailFocus
+                            else -> FocusRequester.Cancel
+                        }
                     }
                 }
                 .focusGroup(),
@@ -155,6 +160,7 @@ fun BrowseScreen(initialViewkey: String? = null) {
             orientation = orientation,
             onCycleOrientation = { orientationIndex = (orientationIndex + 1) % Orientation.entries.size },
             selected = dest,
+            selectedFocus = selectedRailFocus,
             onSelectDest = { destIndex = it.ordinal; focusTrigger++ },
             modifier = Modifier
                 .fillMaxHeight()
@@ -190,12 +196,10 @@ private fun NavRail(
     orientation: Orientation,
     onCycleOrientation: () -> Unit,
     selected: RailDest,
+    selectedFocus: FocusRequester,
     onSelectDest: (RailDest) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // When the rail gains focus (user pressed LEFT), jump to the currently-selected item.
-    val selectedFocus = remember { FocusRequester() }
-    LaunchedEffect(expanded) { if (expanded) runCatching { selectedFocus.requestFocus() } }
     Column(
         modifier
             .background(Color(0xFF1A1A1A))
@@ -242,7 +246,16 @@ private fun RailItem(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Surface(onClick = onClick, modifier = modifier.fillMaxWidth()) {
+    Surface(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth(),
+        colors = ClickableSurfaceDefaults.colors(
+            containerColor = Color.Transparent,
+            focusedContainerColor = Color.Transparent,
+            pressedContainerColor = Color.Transparent,
+            disabledContainerColor = Color.Transparent,
+        ),
+    ) {
         Row(
             Modifier.padding(horizontal = 10.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,

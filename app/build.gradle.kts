@@ -14,12 +14,12 @@ android {
         applicationId = "com.phtv.app"
         minSdk = 23
         targetSdk = 37
-        versionCode = 11
-        versionName = "1.1"
+        versionCode = 12
+        versionName = "1.2"
     }
 
     signingConfigs {
-        // Reuse the local debug keystore so release builds are installable for testing/sideloading.
+        // Local fallback: reuse the debug keystore so local release builds stay sideloadable (CI signs via apksigner).
         create("local") {
             storeFile = file("${System.getProperty("user.home")}/.android/debug.keystore")
             storePassword = "android"
@@ -32,7 +32,9 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = signingConfigs.getByName("local")
+            // On CI (GitHub Actions sets CI=true) build unsigned, then sign with the release
+            // keystore via apksigner. Locally, keep debug-signing so the release variant installs.
+            signingConfig = if (System.getenv("CI") == "true") null else signingConfigs.getByName("local")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

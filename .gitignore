@@ -10,6 +10,9 @@ captures/
 .externalNativeBuild/
 .cxx/
 
+# Kotlin Gradle plugin data
+.kotlin/
+
 # Local SDK path + secrets (never commit)
 local.properties
 keystore.properties
